@@ -1,0 +1,1364 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "name": "v2_nnHH_ESP_Pipe003_For_GitHub_refactored_[1NN for each drumtype]_TrainFirstCNN.ipynb",
+      "provenance": [],
+      "collapsed_sections": []
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    }
+  },
+  "cells": [
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "eaYla0WTiIOn",
+        "outputId": "00859d21-12ca-4860-c8b1-203a28722884"
+      },
+      "source": [
+        "script_idea = \"\"\"\n",
+        "Script intended to train 1 NN for each drumtype, this is the UPDATED version.\n",
+        "Before training the model, you have to preprocess the songs and the annotations \n",
+        "After processing, everything is going to EXP_PIPE_DATA (path, see bellow)\n",
+        "\"\"\"\n",
+        "print(script_idea)"
+      ],
+      "execution_count": 1,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "Script intended to train 1 NN for each drumtype, this is the UPDATED version.\n",
+            "Before training the model, you have to preprocess the songs and the annotations \n",
+            "After processing, everything is going to EXP_PIPE_DATA (see bellow)\n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Define libraries, paths and import data"
+      ],
+      "metadata": {
+        "id": "ERgjOG1avXWv"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Which instrument you want to run the pipeline for; ie if target_label = \"HH\" -> create model for hihat. \n",
+        "target_label = \"HH\""
+      ],
+      "metadata": {
+        "id": "rYmCcn3T2xXx"
+      },
+      "execution_count": 6,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "dS5TRims5WaP",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "178517c9-7682-4aae-dbb6-5ea469cfa32a"
+      },
+      "source": [
+        "# preprocess modules\n",
+        "import librosa\n",
+        "from librosa import display\n",
+        "import os,sys,re,pandas as pd,numpy as np\n",
+        "from scipy.io import wavfile\n",
+        "import math\n",
+        "from sympy import Interval\n",
+        "# viz\n",
+        "import seaborn as sns\n",
+        "import plotly.express as px\n",
+        "import matplotlib.pyplot as plt\n",
+        "# sklearn\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from sklearn.metrics import confusion_matrix, classification_report, f1_score, recall_score, precision_score\n",
+        "# torch\n",
+        "import torch.nn as nn\n",
+        "import torch.nn.functional as F\n",
+        "import torchvision\n",
+        "import torch\n",
+        "import torch.optim as optim\n",
+        "# other\n",
+        "import random\n",
+        "import logging\n",
+        "import glob\n",
+        "import warnings\n",
+        "from google.colab import drive\n",
+        "import sys\n",
+        "\n",
+        "ROOT_DIR = \"/content/drive\"\n",
+        "#  Just use this if you are using google as a bucket\n",
+        "drive.mount(ROOT_DIR, force_remount=True)\n",
+        "# Don't forget to type My Drive before the whole path (in case you are using gdrive)\n",
+        "# In case you're not using gdrive; MUSIC_DIR should be your rootdir\n",
+        "MUSIC_DIR = os.path.join(ROOT_DIR,'My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums')\n",
+        "AUDIO_DIR = os.path.join(MUSIC_DIR,'audio','drum_only')\n",
+        "ANNOTATIONS_DIR = os.path.join(MUSIC_DIR,'annotations','class')\n",
+        "# where your preprocessed data is for train & test (for the preprocesing script see )\n",
+        "EXP_PIPE_DATA = os.path.join(MUSIC_DIR,\"pipe005_multiplemodelsdata_corrected_over60\")\n",
+        "EXP_PIPE_DATA_TRAIN = os.path.join(EXP_PIPE_DATA,\"train\")\n",
+        "EXP_PIPE_DATA_TEST = os.path.join(EXP_PIPE_DATA,\"test\")"
+      ],
+      "execution_count": 7,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Mounted at /content/drive\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "JPrVlqsTscub"
+      },
+      "source": [
+        "# download trainmodel_utils.py and import it \n",
+        "sys.path.insert(0,'/content/drive/My Drive/Colab Notebooks/tesis_esp')\n",
+        "import trainmodel_utils"
+      ],
+      "execution_count": 8,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# reproductibility\n",
+        "myseed = 1995\n",
+        "torch.manual_seed(0)\n",
+        "random.seed(0)\n",
+        "np.random.seed(0)"
+      ],
+      "metadata": {
+        "id": "m1ICJ4g1LlMD"
+      },
+      "execution_count": 9,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "We will split the whole \"trainingdata\" into 3 splits (train, val, test) ;Do NOT confuse this test split with tthe testfolder, the later one are OutOfSample  songs, that were not seen during training. Test ratio was not seen during training but we changed  some experiments according to it."
+      ],
+      "metadata": {
+        "id": "n6QrnbkE1FkU"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "ayru0Sh8BQlg"
+      },
+      "source": [
+        "#get filepaths\n",
+        "file_paths_txt_train = glob.glob(EXP_PIPE_DATA_TRAIN+\"/*.txt\")\n",
+        "file_paths_npy_train = glob.glob(EXP_PIPE_DATA_TRAIN+\"/*.npy\")\n",
+        "# we should this one in the evaluation script, not in this one\n",
+        "file_paths_txt_test = glob.glob(EXP_PIPE_DATA_TEST+\"/*.txt\")\n",
+        "file_paths_npy_test = glob.glob(EXP_PIPE_DATA_TEST+\"/*.npy\")\n",
+        "## ------------params ------------\n",
+        "train_ratio = 0.8\n",
+        "validation_ratio = 0.2 # you should use then after\n",
+        "# test_ratio = 0.0\n"
+      ],
+      "execution_count": 10,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "PpCCFB3zhYpK",
+        "outputId": "28b5935f-5f6a-4e60-ccc7-2ea183a371da"
+      },
+      "source": [
+        "logfile_path = os.path.join(EXP_PIPE_DATA,f'BinaryClassBCEnn_model_{target_label}_logfile.log')\n",
+        "logging.basicConfig(filename = logfile_path, format='%(asctime)s %(levelname)s:%(message)s', level=logging.DEBUG, datefmt='%m/%d/%Y %I:%M:%S %p')\n",
+        "file_paths_txt_targeted,file_paths_npy_targeted = trainmodel_utils.filter_path_for_target_label(file_paths_txt_train,file_paths_npy_train,target_label)\n",
+        "\n",
+        "# load all data in memory\n",
+        "labels_list,data_npy_list = trainmodel_utils.load_labels_and_data_from_npy(file_paths_npy_all = file_paths_npy_targeted)\n",
+        "data = trainmodel_utils.merge_numpy_data(data_npy_list) # X\n",
+        "labels = trainmodel_utils.merge_labels_data(labels_list) # y\n",
+        "assert data.shape[0] == len(labels)\n",
+        "print(f\" Dataset is of {data.shape[0]} onsets, \\n with a 33x9 (64-> window size, strides of 16 to a padded signal of len 128\")\n",
+        "# x_train, x_val, x_test,y_train,y_val,y_test = trainmodel_utils.trainvaltest_split(data,labels,train_ratio,validation_ratio,test_ratio, myseed)\n",
+        "# remember: if none, then it will be stratified by y.\n",
+        "x_train, x_val, y_train, y_val = train_test_split(data,labels,test_size=validation_ratio,random_state=myseed, stratify = None)"
+      ],
+      "execution_count": 12,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Disco_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Disco_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Britpop_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Britpop_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Rock_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Rock_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_BebopJazz_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_BebopJazz_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Shadows_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Shadows_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Reggae_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Reggae_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_CoolJazz_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_CoolJazz_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Rockabilly_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_Rockabilly_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_FunkJazz_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_FunkJazz_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_FusionJazz_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_FusionJazz_class__HH.npy\n",
+            "User must verify if the following files correspoond eaco other :\n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_80sRock_class__HH.txt \n",
+            " /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/train/MusicDelta_80sRock_class__HH.npy\n",
+            " Dataset is of 3247 onsets, \n",
+            " with a 33x9 (64-> window size, strides of 16 to a padded signal of len 128\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "0lYdBVyHfiq7",
+        "outputId": "b73a094c-b8b1-4319-f5eb-a9ac0e2da7f8"
+      },
+      "source": [
+        "print(\"Data shape is:\",data.shape)\n",
+        "print(\"Unique labels are:\",set(labels))"
+      ],
+      "execution_count": 13,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Data shape is: (3247, 513, 17)\n",
+            "Unique labels are: {'HH', 'OTHER'}\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "ZUlvIqGZl9EL",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "d67dcf3a-8c0d-4e62-d85b-208442b2387a"
+      },
+      "source": [
+        "# come from this unique_labels = list(set(labels)) \n",
+        "unique_labels = ['OTHER',target_label]\n",
+        "unique_labels_idx = [idx for idx in range(len(unique_labels))]\n",
+        "unique_labels"
+      ],
+      "execution_count": 14,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "['OTHER', 'HH']"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 14
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "GIeld_yZTzF0"
+      },
+      "source": [
+        "def map_labels2idx(label_list2map, unique_labels):\n",
+        "  \"map labels from unique_labels to its respective index\"\n",
+        "  mapped_labels = [unique_labels.index(label_idx) for label_idx in label_list2map]\n",
+        "  return mapped_labels\n",
+        "  \n",
+        "def map_idx2labels(mapped_labels,unique_labels=unique_labels):\n",
+        "  labels = list()\n",
+        "  for idx in range(len(mapped_labels)):\n",
+        "    mapped_lab = mapped_labels[idx]\n",
+        "    label_name = unique_labels[mapped_lab]\n",
+        "    labels.append(label_name)\n",
+        "  return labels"
+      ],
+      "execution_count": 15,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "9RPuOaWmmVJA"
+      },
+      "source": [
+        "labels_indexes = map_labels2idx(labels, unique_labels)\n",
+        "nclasses = len(unique_labels_idx)"
+      ],
+      "execution_count": 16,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "print(labels[:5],labels_indexes[:5])"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "upXJ7jhhZQM6",
+        "outputId": "589ac13d-2eb8-494c-ab28-eb23871fe2ce"
+      },
+      "execution_count": 17,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "['HH', 'HH', 'HH', 'HH', 'OTHER'] [1, 1, 1, 1, 0]\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "0M1OHFNq4goG"
+      },
+      "source": [
+        "def seed_worker(worker_id):\n",
+        "    worker_seed = torch.initial_seed() % 2**32\n",
+        "    np.random.seed(worker_seed)\n",
+        "    random.seed(worker_seed)\n",
+        "\n",
+        "g = torch.Generator()\n",
+        "g.manual_seed(myseed)\n",
+        "\n",
+        "class Dataset(torch.utils.data.Dataset):\n",
+        "  \"\"\"\n",
+        "  Data loader for mini batch processing in pytorch\n",
+        "  Based on https://stanford.edu/~shervine/blog/pytorch-how-to-generate-data-parallel \n",
+        "  \"\"\"\n",
+        "  def __init__(self, data_tensor, labels):\n",
+        "        'Initialization'\n",
+        "        self.labels = labels\n",
+        "        self.data_tensor = data_tensor\n",
+        "\n",
+        "  def __len__(self):\n",
+        "        'Denotes the total number of samples'\n",
+        "        return len(self.labels)\n",
+        "\n",
+        "  def __getitem__(self, index):\n",
+        "        'Generates one sample of data'\n",
+        "        X = self.data_tensor[index] #torch.tensor of 65x17 \n",
+        "        y = self.labels[index]\n",
+        "        return X, y"
+      ],
+      "execution_count": 83,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "4mKhLesaodf2",
+        "outputId": "92e39bd6-cd3a-49b2-c09e-a393bd9c6503"
+      },
+      "source": [
+        "y_train_to_idx = map_labels2idx(y_train, unique_labels)\n",
+        "data_tensor_train = torch.tensor(x_train, dtype=torch.float32)\n",
+        "N,H,W = data_tensor_train.shape\n",
+        "data_tensor_train = data_tensor_train.reshape(N,1,H,W)\n",
+        "print(f\"train dataset shape: {data_tensor_train.shape}\")"
+      ],
+      "execution_count": 84,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "train dataset shape: torch.Size([2597, 1, 513, 17])\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "fTILAAxXG8LX",
+        "outputId": "1a8ea17d-3e62-4cd0-a70a-73e01099b1e3"
+      },
+      "source": [
+        "# validation\n",
+        "y_val_to_idx = map_labels2idx(y_val, unique_labels)\n",
+        "data_tensor_val = torch.tensor(x_val, dtype=torch.float32)\n",
+        "N,H,W = data_tensor_val.shape\n",
+        "data_tensor_val = data_tensor_val.reshape(N,1,H,W)\n",
+        "print(f\"val ndataset shape: {data_tensor_val.shape}\")"
+      ],
+      "execution_count": 85,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "val ndataset shape: torch.Size([650, 1, 513, 17])\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "An example of how the data is mapped:"
+      ],
+      "metadata": {
+        "id": "tzCv3nEZazCr"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "print(f\"[INFO] Example of the mapping:\\n  y_train -> {y_train[:5]} \\n to y_train_to_idx -> {y_train_to_idx[:5]}\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "bIRYnJDeZyyN",
+        "outputId": "b4e25109-a54e-478e-a58d-9074f1a30651"
+      },
+      "execution_count": 86,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO] Example of the mapping:\n",
+            "  y_train -> ['OTHER', 'OTHER', 'HH', 'OTHER', 'HH'] \n",
+            " to y_train_to_idx -> [0, 0, 1, 0, 1]\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Scale our data"
+      ],
+      "metadata": {
+        "id": "pRZF6ttO5Rcb"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "m9sGQw2YuppQ",
+        "outputId": "6305e154-28bf-4360-9426-f9eae99ad120"
+      },
+      "source": [
+        "scaling_method = \"meanstd_normalize\"\n",
+        "\n",
+        "if scaling_method == \"meanstd_normalize\":\n",
+        "  train_mean, train_std = data_tensor_train.mean(), data_tensor_train.std()\n",
+        "  normalize_train_data = {\"mean\":train_mean, \"std\":train_std}\n",
+        "  meanstd_normalize = torchvision.transforms.Normalize(**normalize_train_data, inplace=False) \n",
+        "  print(f\"[INFO]] Applying {scaling_method} method\")\n",
+        "  data_tensor_train_norm = meanstd_normalize(data_tensor_train)\n",
+        "  data_tensor_val_norm = meanstd_normalize(data_tensor_val)\n",
+        "elif scaling_method == \"minmax_normalize\":\n",
+        "  train_max,trainmin = data_tensor_train.max(),data_tensor_train.min()\n",
+        "  train_maxmin_diff  =train_max-trainmin\n",
+        "  minmax_normalize = torchvision.transforms.Normalize(mean = trainmin, std = train_maxmin_diff, inplace=False) \n",
+        "  print(f\"[INFO]] Applying {scaling_method} method \")\n",
+        "  data_tensor_train_norm = minmax_normalize(data_tensor_train)\n",
+        "  data_tensor_val_norm = minmax_normalize(data_tensor_val)\n",
+        "else:\n",
+        "  pass"
+      ],
+      "execution_count": 87,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO]] Applying meanstd_normalize method\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "-vWTvmv3bpz_"
+      },
+      "source": [
+        "# CUDA for PyTorch ; try to control as much randomness as possible\n",
+        "use_cuda = torch.cuda.is_available()\n",
+        "device = torch.device(\"cuda:0\" if use_cuda else \"cpu\")\n",
+        "torch.backends.cudnn.benchmark = True\n",
+        "torch.backends.cudnn.deterministic=True\n",
+        "# \n",
+        "# Parameters\n",
+        "dataloader_params = {'batch_size': 128,\n",
+        "          'shuffle': True,\n",
+        "          'num_workers': 2,\n",
+        "          'worker_init_fn':seed_worker,\n",
+        "          'generator': g}\n",
+        "max_epochs = 100\n",
+        "\n",
+        "# Generators\n",
+        "training_set = Dataset(data_tensor_train_norm, y_train_to_idx)\n",
+        "training_generator = torch.utils.data.DataLoader(training_set, **dataloader_params)\n",
+        "\n",
+        "validation_set  = Dataset(data_tensor_val_norm, y_val_to_idx)\n",
+        "validation_generator = torch.utils.data.DataLoader(validation_set, **dataloader_params)\n"
+      ],
+      "execution_count": 102,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "An example of the features that will be used:"
+      ],
+      "metadata": {
+        "id": "_knPvqbna7L3"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "u1qZ5iiZcWGC",
+        "outputId": "70cd6c57-fc27-4e10-9b69-e27592a7ff0b"
+      },
+      "source": [
+        "nexamples2show = 5\n",
+        "testiter = iter(training_set) #start the iterator\n",
+        "for i in range(nexamples2show):\n",
+        "  first_x,first_y = next(testiter)\n",
+        "  print(f\"Observation nubmer {i} has labelidx:{first_y} and shape {first_x.shape}\")\n",
+        " "
+      ],
+      "execution_count": 103,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Observation nubmer 0 has labelidx:0 and shape torch.Size([1, 513, 17])\n",
+            "Observation nubmer 1 has labelidx:0 and shape torch.Size([1, 513, 17])\n",
+            "Observation nubmer 2 has labelidx:1 and shape torch.Size([1, 513, 17])\n",
+            "Observation nubmer 3 has labelidx:0 and shape torch.Size([1, 513, 17])\n",
+            "Observation nubmer 4 has labelidx:1 and shape torch.Size([1, 513, 17])\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "See if there is a huge unbalanced data set or not"
+      ],
+      "metadata": {
+        "id": "-MncC0ztvM0I"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "pd.Series(y_train).value_counts(normalize=False)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "20mTxnQILcmR",
+        "outputId": "77f46223-bcd0-4fe7-c004-d687d702d1f9"
+      },
+      "execution_count": 104,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "OTHER    1370\n",
+              "HH       1227\n",
+              "dtype: int64"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 104
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "pd.Series(y_train).value_counts(normalize=True)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "HXP_61bJsu5k",
+        "outputId": "561ad81f-7ccb-4eb1-948e-9fd89216c31b"
+      },
+      "execution_count": 105,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "OTHER    0.527532\n",
+              "HH       0.472468\n",
+              "dtype: float64"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 105
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "pd.Series(y_val).value_counts(normalize=False)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "uFrZ6zbKGnF0",
+        "outputId": "d7341810-b26b-44ad-e243-4a83189b58de"
+      },
+      "execution_count": 106,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "OTHER    337\n",
+              "HH       313\n",
+              "dtype: int64"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 106
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# for evaluating f1score etc\n",
+        "threshold = pd.Series(y_train).value_counts(normalize=True)[1]\n",
+        "# threshold = 0.5\n",
+        "threshold_torch = torch.tensor([threshold])\n",
+        "print(f\"[INFO] Threshold for this model is {threshold_torch}\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "LUnQHGDwskPi",
+        "outputId": "32acba19-81c1-4ba5-9068-dbf57bed986e"
+      },
+      "execution_count": 107,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO] Threshold for this model is tensor([0.4725], dtype=torch.float64)\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "r4z8GEX95h1p"
+      },
+      "source": [
+        "def evaluate_data_pytorch(data_generator:torch.utils.data.DataLoader,pytorch_net,sklearnmetric:str ='classification_report',prediction_threshold = threshold_torch) ->str:\n",
+        "  \"\"\"\n",
+        "  Function for evaluating validation set using torch dataloader. \n",
+        "  taken/based on https://towardsdatascience.com/beginners-guide-to-loading-image-data-with-pytorch-289c60b7afec\n",
+        "  data_generator -> must be pytorch generator \n",
+        "  pytorch_net: -> pytorch neural network\n",
+        "  \n",
+        "  sklearnmetric: sklearn metric that requires y_true and y_pred ; could be classification_report or f1_score or other\n",
+        "  prediction_threshold: torch tensor 1d ; just torch.tensor([threshold]) where threshold is a float \n",
+        "  \"\"\"\n",
+        "  truelabels_val,predictedlabels_val = list(),list()\n",
+        "  # since we're not training, we don't need to calculate the gradients for our outputs\n",
+        "  with torch.no_grad():\n",
+        "      for i, data in enumerate(data_generator, 0):\n",
+        "          # get the inputs; data is a list of [inputs, labels]\n",
+        "          if not cuda:\n",
+        "            inputs, labels = data\n",
+        "          if cuda:\n",
+        "            inputs, labels = data[0].to(device), data[1].to(device)\n",
+        "          #print(inputs.shape)\n",
+        "          outputs = net(inputs)\n",
+        "          predicted = (outputs>=prediction_threshold).float()*1\n",
+        "          #print(predicted)\n",
+        "          #total += labels.size(0)\n",
+        "          truelabels_val.extend(labels.tolist())\n",
+        "          predictedlabels_val.extend(predicted.tolist())\n",
+        "          #correct += (predicted == labels).sum().item()\n",
+        "  df_val = pd.DataFrame({\"truelabel\":truelabels_val,\"predicted\":predictedlabels_val})\n",
+        "  if sklearnmetric == \"classification_report\":\n",
+        "    cr = classification_report(y_true=df_val[\"truelabel\"].tolist(),y_pred=df_val[\"predicted\"].tolist(), output_dict = True)\n",
+        "  elif sklearnmetric == \"f1_score_weighted\":\n",
+        "    cr = f1_score(y_true=df_val[\"truelabel\"].tolist(),y_pred=df_val[\"predicted\"].tolist(),average = 'weighted')\n",
+        "  else:\n",
+        "    raise ValueError(\"Please  sklearn metric mustbe classification_report or f1_score with avergage weighted\")      \n",
+        "  return cr"
+      ],
+      "execution_count": 108,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Define network architecture CNN"
+      ],
+      "metadata": {
+        "id": "Zg8uhUSf6W56"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "k6JRSBtT5jff"
+      },
+      "source": [
+        "cuda = False\n",
+        "\n",
+        "\n",
+        "class Net(nn.Module):\n",
+        "    def __init__(self,nchannels,nclasses, unique_labels, meanstd_normalize, prediction_threshold):\n",
+        "        \"\"\"\n",
+        "        unique_labels: list of labels to be mapped; example: ['OTHER','KD'] \n",
+        "        meanstd_normalize:  output from torchvision.transforms.Normalize; for zscaling \n",
+        "            o             the data\n",
+        "        prediction_threshold: float in (0,1) interval; if proba>threshold then\n",
+        "                      predicted class will be TARGET else other. \n",
+        "        nclasses of the net; 2 in this case since we are applying binary classif\n",
+        "        \"\"\"\n",
+        "        # start\n",
+        "        super().__init__()\n",
+        "        self.prediction_threshold = torch.tensor([prediction_threshold])\n",
+        "        # this is the normalizer to used in the predictor then\n",
+        "        self.meanstd_normalizer = torchvision.transforms.Normalize(**meanstd_normalize, inplace=False) \n",
+        "        # remove it if you want to this is jsut for cleaner predictions (use labels instead of etc)\n",
+        "        self.unique_labels = unique_labels\n",
+        "        # other attributes\n",
+        "        self.nchannels = nchannels\n",
+        "        self.nclasses = nclasses\n",
+        "        self.conv1 = nn.Conv2d(self.nchannels, 6, 5)\n",
+        "        self.pool = nn.MaxPool2d(2, 2)\n",
+        "        self.conv2 = nn.Conv2d(6, 16, 5)\n",
+        "        self.fc1 = nn.Linear(2000, 120)\n",
+        "        self.dropout1 = nn.Dropout(p=0.5, inplace=False)\n",
+        "        self.fc2 = nn.Linear(120, 84)\n",
+        "        #self.dropout2 = nn.Dropout(p=0.3, inplace=False)\n",
+        "        self.fc3 = nn.Linear(84, self.nclasses)\n",
+        "    def forward(self, x):\n",
+        "        # conv1 \n",
+        "        x = self.conv1(x)\n",
+        "        #print(\"Conv1:\",x.shape)\n",
+        "        x =F.relu(x)\n",
+        "        x = self.pool(x)\n",
+        "        #print(\"Pool1:\",x.shape)\n",
+        "        x = self.conv2(x)\n",
+        "        #print(\"Conv2:\",x.shape)\n",
+        "        x = F.relu(x)\n",
+        "        x = self.pool(x)\n",
+        "        #print(\"Pool2:\",x.shape)\n",
+        "        # flatten  all dims except the batch; \n",
+        "        x = torch.flatten(x, 1) # flatten all dimensions except batch\n",
+        "        #print(\"Flattened, except batch:\",x.shape)\n",
+        "        x = self.fc1(x)\n",
+        "        x=F.relu(x)\n",
+        "        x = self.dropout1(x)\n",
+        "        x = self.fc2(x)\n",
+        "        x = F.relu(x)\n",
+        "        #x = self.dropout2(x)\n",
+        "        # pass over fc3 omg\n",
+        "        x = self.fc3(x)\n",
+        "        x = torch.sigmoid(x)\n",
+        "        return x\n",
+        "    def map_idx2labels(self,mapped_labels,unique_labels):\n",
+        "      labels = list()\n",
+        "      for idx in range(len(mapped_labels)):\n",
+        "        mapped_lab = mapped_labels[idx]\n",
+        "        label_name = unique_labels[mapped_lab]\n",
+        "        labels.append(label_name)\n",
+        "      return labels\n",
+        "\n",
+        "    def predict(self,x_batch):\n",
+        "      \"\"\"\n",
+        "      Final prediction function\n",
+        "      params:\n",
+        "        x_batch -> np.array model dimensions data_lenx513x17 data\n",
+        "      return: mapped prediction (either target label or other)\n",
+        "      \"\"\"\n",
+        "      #x_batch = x_test[:10].copy()\n",
+        "      #N = len(x_batch)\n",
+        "      data_tensor = torch.tensor(x_batch, dtype=torch.float32)\n",
+        "      N,H,W = data_tensor.shape\n",
+        "      print(N,H,W)\n",
+        "      data_tensor = data_tensor.reshape(N,1,H,W)\n",
+        "      # noramalize data\n",
+        "      data_tensor = self.meanstd_normalizer(data_tensor)\n",
+        "      #forward pass\n",
+        "      predictions = self.forward(data_tensor)\n",
+        "      if self.prediction_threshold is not None:\n",
+        "        predictions = (predictions>=self.prediction_threshold).float()*1\n",
+        "      predictions2labels = self.map_idx2labels(predictions,self.unique_labels)\n",
+        "      return predictions2labels\n",
+        "\n"
+      ],
+      "execution_count": 109,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Define a few net params"
+      ],
+      "metadata": {
+        "id": "fTJSfMSA6N8s"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "is_weighted = False\n",
+        "if is_weighted:\n",
+        "  counts_other = y_train.count(\"OTHER\")\n",
+        "  counts_traindata = len(y_train)\n",
+        "  counts_target = counts_traindata- counts_other\n",
+        "  scale_weights_array = counts_other/counts_target\n",
+        "  # scale_weights_array = [counts_traindata/counts_target, counts_traindata/counts_other]\n",
+        "  weight_to_balance = torch.tensor(scale_weights_array)\n",
+        "else:\n",
+        "  # equal to torch.tensor([1,1])\n",
+        "  weight_to_balance = None\n",
+        "print(f\"[INFO] Current weights to loss function {weight_to_balance}\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "lFFyvBx5vP3O",
+        "outputId": "e975e4ac-279c-43c3-abce-584939f7c62b"
+      },
+      "execution_count": 110,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO] Current weights to loss function None\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "net = Net(nchannels=1,nclasses=1, unique_labels=unique_labels, meanstd_normalize=normalize_train_data, prediction_threshold = threshold)\n",
+        "if cuda:\n",
+        "  net.to(device)\n",
+        "\n",
+        "#--- START network params\n",
+        "optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=0.0)\n",
+        "n_epochs = 100 \n",
+        "# this is like bce but with a logit ; so no need to use a sigmoid layer\n",
+        "criterion = nn.BCELoss(weight = weight_to_balance)\n",
+        "# if it doesnt improve within  early_stopping_patience iterations\n",
+        "early_stopping_patience = 10\n",
+        "early_stopping_min_increase = 0.01 # early_stopping_min_increase percent\n",
+        "metric_to_monitor = \"f1-score\"\n",
+        "#--- END network params"
+      ],
+      "metadata": {
+        "id": "9Uae-8uKdmWZ"
+      },
+      "execution_count": 124,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Start training the net with early stopping"
+      ],
+      "metadata": {
+        "id": "QHTGvEo56HHZ"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "nUwU4kGkru_R",
+        "outputId": "45ac86db-3727-43fa-8579-8abcabd2d6b9"
+      },
+      "source": [
+        "metadata_results_list = list()\n",
+        "# for early stopping\n",
+        "early_stopping_counter = 0\n",
+        "epoch = 0\n",
+        "metric_to_monitor_val_best = 0.0001 # to avoid zero division\n",
+        "\n",
+        "while (epoch<n_epochs) and  (early_stopping_counter<=early_stopping_patience):\n",
+        "  running_loss = 0.0\n",
+        "  # BATCH RUN\n",
+        "  for i, data in enumerate(training_generator, 0):\n",
+        "      # get the inputs; data is a list of [inputs, labels]\n",
+        "      if not cuda:\n",
+        "        inputs, labels = data\n",
+        "      if cuda:\n",
+        "        inputs, labels = data[0].to(device), data[1].to(device)\n",
+        "      # zero the parameter gradients\n",
+        "      optimizer.zero_grad()\n",
+        "\n",
+        "      # forward + backward + optimize\n",
+        "      outputs = net(inputs)\n",
+        "      # this is for making the outputs and the labels shapes equal \n",
+        "      labels = labels.unsqueeze(1).float()\n",
+        "      loss = criterion(outputs, labels)\n",
+        "      loss.backward()\n",
+        "      optimizer.step()\n",
+        "      # print statistics\n",
+        "      running_loss += loss.item()\n",
+        "\n",
+        "\n",
+        "  metric_to_monitor_train = evaluate_data_pytorch(training_generator,pytorch_net = net,sklearnmetric='classification_report')['1'][metric_to_monitor]\n",
+        "  metric_to_monitor_val = evaluate_data_pytorch(validation_generator,pytorch_net = net,sklearnmetric='classification_report')['1'][metric_to_monitor]\n",
+        "\n",
+        "\n",
+        "  # monitor early stopping ; increase in comparison with best\n",
+        "  metric_increase_epoch = metric_to_monitor_val/metric_to_monitor_val_best-1\n",
+        "  if metric_increase_epoch<early_stopping_min_increase:\n",
+        "    # increase counter if it doesnt increase enough\n",
+        "    early_stopping_counter += 1\n",
+        "  else: # reset counter\n",
+        "    early_stopping_counter = 0\n",
+        "  \n",
+        "  if metric_to_monitor_val>metric_to_monitor_val_best:\n",
+        "    metric_to_monitor_val_best = metric_to_monitor_val\n",
+        "  # save results\n",
+        "  results_dict = dict()\n",
+        "  results_dict[f\"epoch\"] = epoch\n",
+        "  results_dict[f\"{metric_to_monitor}_train\"] = metric_to_monitor_train\n",
+        "  results_dict[f\"{metric_to_monitor}_val\"] = metric_to_monitor_val\n",
+        "  metadata_results_list.append(results_dict)\n",
+        "\n",
+        "  print(f\"[INFO] Epoch number: {epoch}, iterations with less than {early_stopping_min_increase} \\\n",
+        "  improvement:{early_stopping_counter}; improvement_percentage (in comparison with best epoch): {metric_increase_epoch}\")\n",
+        "  print(f\"[INFO] {metric_to_monitor} train: {metric_to_monitor_train} and val: {metric_to_monitor_val}  \")\n",
+        "  epoch+=1\n",
+        "print(f'[INFO] Finished Training in {epoch} epochs')"
+      ],
+      "execution_count": 125,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO] Epoch number: 0, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 5741.574257425743\n",
+            "[INFO] f1-score train: 0.6116700201207242 and val: 0.5742574257425743  \n",
+            "[INFO] Epoch number: 1, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.08461496951054981\n",
+            "[INFO] f1-score train: 0.6438095238095238 and val: 0.622848200312989  \n",
+            "[INFO] Epoch number: 2, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.12573865446248078\n",
+            "[INFO] f1-score train: 0.695906432748538 and val: 0.701164294954722  \n",
+            "[INFO] Epoch number: 3, iterations with less than 0.01   improvement:1; improvement_percentage (in comparison with best epoch): -0.018615333006476997\n",
+            "[INFO] f1-score train: 0.691959624086321 and val: 0.6881118881118882  \n",
+            "[INFO] Epoch number: 4, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.01646245744225383\n",
+            "[INFO] f1-score train: 0.7213445378151261 and val: 0.712707182320442  \n",
+            "[INFO] Epoch number: 5, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.021488201720759825\n",
+            "[INFO] f1-score train: 0.7206837606837605 and val: 0.7280219780219779  \n",
+            "[INFO] Epoch number: 6, iterations with less than 0.01   improvement:1; improvement_percentage (in comparison with best epoch): -0.00030210650627537916\n",
+            "[INFO] f1-score train: 0.7374503430841459 and val: 0.727802037845706  \n",
+            "[INFO] Epoch number: 7, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.08071845430336011\n",
+            "[INFO] f1-score train: 0.7939101373932417 and val: 0.7867867867867868  \n",
+            "[INFO] Epoch number: 8, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.06507740202140821\n",
+            "[INFO] f1-score train: 0.8318584070796461 and val: 0.8379888268156425  \n",
+            "[INFO] Epoch number: 9, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.04580073030777254\n",
+            "[INFO] f1-score train: 0.8907363420427554 and val: 0.8763693270735524  \n",
+            "[INFO] Epoch number: 10, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.030411083352259727\n",
+            "[INFO] f1-score train: 0.9060593737291583 and val: 0.90302066772655  \n",
+            "[INFO] Epoch number: 11, iterations with less than 0.01   improvement:1; improvement_percentage (in comparison with best epoch): -0.0009576530493073943\n",
+            "[INFO] f1-score train: 0.9176470588235294 and val: 0.9021558872305141  \n",
+            "[INFO] Epoch number: 12, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.0110992039191673\n",
+            "[INFO] f1-score train: 0.9148020654044751 and val: 0.9130434782608696  \n",
+            "[INFO] Epoch number: 13, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.030399999999999983\n",
+            "[INFO] f1-score train: 0.939975500204165 and val: 0.9408  \n",
+            "[INFO] Epoch number: 14, iterations with less than 0.01   improvement:1; improvement_percentage (in comparison with best epoch): -0.027273138872853653\n",
+            "[INFO] f1-score train: 0.9348914858096827 and val: 0.9151414309484193  \n",
+            "[INFO] Epoch number: 15, iterations with less than 0.01   improvement:2; improvement_percentage (in comparison with best epoch): -0.019649181986844177\n",
+            "[INFO] f1-score train: 0.9341166596726816 and val: 0.922314049586777  \n",
+            "[INFO] Epoch number: 16, iterations with less than 0.01   improvement:3; improvement_percentage (in comparison with best epoch): 0.005067656922800312\n",
+            "[INFO] f1-score train: 0.945324881141046 and val: 0.9455676516329705  \n",
+            "[INFO] Epoch number: 17, iterations with less than 0.01   improvement:4; improvement_percentage (in comparison with best epoch): -0.012704362650813095\n",
+            "[INFO] f1-score train: 0.941027801179444 and val: 0.9335548172757475  \n",
+            "[INFO] Epoch number: 18, iterations with less than 0.01   improvement:0; improvement_percentage (in comparison with best epoch): 0.010110914304993335\n",
+            "[INFO] f1-score train: 0.9551877270892208 and val: 0.9551282051282052  \n",
+            "[INFO] Epoch number: 19, iterations with less than 0.01   improvement:1; improvement_percentage (in comparison with best epoch): -0.012219318884106323\n",
+            "[INFO] f1-score train: 0.9565573770491804 and val: 0.9434571890145396  \n",
+            "[INFO] Epoch number: 20, iterations with less than 0.01   improvement:2; improvement_percentage (in comparison with best epoch): -0.0025617682552453447\n",
+            "[INFO] f1-score train: 0.9490445859872612 and val: 0.9526813880126183  \n",
+            "[INFO] Epoch number: 21, iterations with less than 0.01   improvement:3; improvement_percentage (in comparison with best epoch): -0.03734066033061578\n",
+            "[INFO] f1-score train: 0.9375 and val: 0.9194630872483222  \n",
+            "[INFO] Epoch number: 22, iterations with less than 0.01   improvement:4; improvement_percentage (in comparison with best epoch): 0.0014590020426028527\n",
+            "[INFO] f1-score train: 0.9604938271604938 and val: 0.9565217391304348  \n",
+            "[INFO] Epoch number: 23, iterations with less than 0.01   improvement:5; improvement_percentage (in comparison with best epoch): -0.01253421697161805\n",
+            "[INFO] f1-score train: 0.951015531660693 and val: 0.9445324881141045  \n",
+            "[INFO] Epoch number: 24, iterations with less than 0.01   improvement:6; improvement_percentage (in comparison with best epoch): -0.006734006734006814\n",
+            "[INFO] f1-score train: 0.9553827261563651 and val: 0.9500805152979066  \n",
+            "[INFO] Epoch number: 25, iterations with less than 0.01   improvement:7; improvement_percentage (in comparison with best epoch): -0.008854781582054216\n",
+            "[INFO] f1-score train: 0.9621489621489621 and val: 0.9480519480519481  \n",
+            "[INFO] Epoch number: 26, iterations with less than 0.01   improvement:8; improvement_percentage (in comparison with best epoch): 0.0001459214942360898\n",
+            "[INFO] f1-score train: 0.9676891615541922 and val: 0.956661316211878  \n",
+            "[INFO] Epoch number: 27, iterations with less than 0.01   improvement:9; improvement_percentage (in comparison with best epoch): -0.024153269861089455\n",
+            "[INFO] f1-score train: 0.9525807805287452 and val: 0.9335548172757475  \n",
+            "[INFO] Epoch number: 28, iterations with less than 0.01   improvement:10; improvement_percentage (in comparison with best epoch): 0.0011343227148123969\n",
+            "[INFO] f1-score train: 0.9584487534626039 and val: 0.9577464788732395  \n",
+            "[INFO] Epoch number: 29, iterations with less than 0.01   improvement:11; improvement_percentage (in comparison with best epoch): -0.0056022408963585235\n",
+            "[INFO] f1-score train: 0.9684466019417476 and val: 0.9523809523809524  \n",
+            "[INFO] Finished Training in 30 epochs\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Analyze results over the net"
+      ],
+      "metadata": {
+        "id": "l-2vAIwJu0p-"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "df_results = pd.DataFrame(metadata_results_list)\n",
+        "df_results_train = df_results[[\"epoch\",\"f1-score_train\"]].copy().rename(columns={\"f1-score_train\":\"f1-score\"})\n",
+        "df_results_train[\"dataset_type\"] = \"training\"\n",
+        "df_results_val = df_results[[\"epoch\",\"f1-score_val\"]].copy().rename(columns={\"f1-score_val\":\"f1-score\"})\n",
+        "df_results_val[\"dataset_type\"] = \"validation\"\n",
+        "df_trainval = pd.concat([df_results_train,df_results_val],axis=0).reset_index(drop=True)\n",
+        "fig = px.line(df_trainval, x=\"epoch\", y=\"f1-score\", color='dataset_type')\n",
+        "fig.show()"
+      ],
+      "metadata": {
+        "id": "APmf14QYGTqp",
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 542
+        },
+        "outputId": "7726333f-90aa-49cd-eff6-aa739a4aad91"
+      },
+      "execution_count": 126,
+      "outputs": [
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/html": [
+              "<html>\n",
+              "<head><meta charset=\"utf-8\" /></head>\n",
+              "<body>\n",
+              "    <div>            <script src=\"https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_SVG\"></script><script type=\"text/javascript\">if (window.MathJax) {MathJax.Hub.Config({SVG: {font: \"STIX-Web\"}});}</script>                <script type=\"text/javascript\">window.PlotlyConfig = {MathJaxConfig: 'local'};</script>\n",
+              "        <script src=\"https://cdn.plot.ly/plotly-2.8.3.min.js\"></script>                <div id=\"c45ac642-7293-4bc4-a09c-af437b08eb66\" class=\"plotly-graph-div\" style=\"height:525px; width:100%;\"></div>            <script type=\"text/javascript\">                                    window.PLOTLYENV=window.PLOTLYENV || {};                                    if (document.getElementById(\"c45ac642-7293-4bc4-a09c-af437b08eb66\")) {                    Plotly.newPlot(                        \"c45ac642-7293-4bc4-a09c-af437b08eb66\",                        [{\"hovertemplate\":\"dataset_type=training<br>epoch=%{x}<br>f1-score=%{y}<extra></extra>\",\"legendgroup\":\"training\",\"line\":{\"color\":\"#636efa\",\"dash\":\"solid\"},\"marker\":{\"symbol\":\"circle\"},\"mode\":\"lines\",\"name\":\"training\",\"orientation\":\"v\",\"showlegend\":true,\"x\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29],\"xaxis\":\"x\",\"y\":[0.6116700201207242,0.6438095238095238,0.695906432748538,0.691959624086321,0.7213445378151261,0.7206837606837605,0.7374503430841459,0.7939101373932417,0.8318584070796461,0.8907363420427554,0.9060593737291583,0.9176470588235294,0.9148020654044751,0.939975500204165,0.9348914858096827,0.9341166596726816,0.945324881141046,0.941027801179444,0.9551877270892208,0.9565573770491804,0.9490445859872612,0.9375,0.9604938271604938,0.951015531660693,0.9553827261563651,0.9621489621489621,0.9676891615541922,0.9525807805287452,0.9584487534626039,0.9684466019417476],\"yaxis\":\"y\",\"type\":\"scatter\"},{\"hovertemplate\":\"dataset_type=validation<br>epoch=%{x}<br>f1-score=%{y}<extra></extra>\",\"legendgroup\":\"validation\",\"line\":{\"color\":\"#EF553B\",\"dash\":\"solid\"},\"marker\":{\"symbol\":\"circle\"},\"mode\":\"lines\",\"name\":\"validation\",\"orientation\":\"v\",\"showlegend\":true,\"x\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29],\"xaxis\":\"x\",\"y\":[0.5742574257425743,0.622848200312989,0.701164294954722,0.6881118881118882,0.712707182320442,0.7280219780219779,0.727802037845706,0.7867867867867868,0.8379888268156425,0.8763693270735524,0.90302066772655,0.9021558872305141,0.9130434782608696,0.9408,0.9151414309484193,0.922314049586777,0.9455676516329705,0.9335548172757475,0.9551282051282052,0.9434571890145396,0.9526813880126183,0.9194630872483222,0.9565217391304348,0.9445324881141045,0.9500805152979066,0.9480519480519481,0.956661316211878,0.9335548172757475,0.9577464788732395,0.9523809523809524],\"yaxis\":\"y\",\"type\":\"scatter\"}],                        {\"template\":{\"data\":{\"bar\":[{\"error_x\":{\"color\":\"#2a3f5f\"},\"error_y\":{\"color\":\"#2a3f5f\"},\"marker\":{\"line\":{\"color\":\"#E5ECF6\",\"width\":0.5},\"pattern\":{\"fillmode\":\"overlay\",\"size\":10,\"solidity\":0.2}},\"type\":\"bar\"}],\"barpolar\":[{\"marker\":{\"line\":{\"color\":\"#E5ECF6\",\"width\":0.5},\"pattern\":{\"fillmode\":\"overlay\",\"size\":10,\"solidity\":0.2}},\"type\":\"barpolar\"}],\"carpet\":[{\"aaxis\":{\"endlinecolor\":\"#2a3f5f\",\"gridcolor\":\"white\",\"linecolor\":\"white\",\"minorgridcolor\":\"white\",\"startlinecolor\":\"#2a3f5f\"},\"baxis\":{\"endlinecolor\":\"#2a3f5f\",\"gridcolor\":\"white\",\"linecolor\":\"white\",\"minorgridcolor\":\"white\",\"startlinecolor\":\"#2a3f5f\"},\"type\":\"carpet\"}],\"choropleth\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"type\":\"choropleth\"}],\"contour\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"contour\"}],\"contourcarpet\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"type\":\"contourcarpet\"}],\"heatmap\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"heatmap\"}],\"heatmapgl\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"heatmapgl\"}],\"histogram\":[{\"marker\":{\"pattern\":{\"fillmode\":\"overlay\",\"size\":10,\"solidity\":0.2}},\"type\":\"histogram\"}],\"histogram2d\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"histogram2d\"}],\"histogram2dcontour\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"histogram2dcontour\"}],\"mesh3d\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"type\":\"mesh3d\"}],\"parcoords\":[{\"line\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"parcoords\"}],\"pie\":[{\"automargin\":true,\"type\":\"pie\"}],\"scatter\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scatter\"}],\"scatter3d\":[{\"line\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scatter3d\"}],\"scattercarpet\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scattercarpet\"}],\"scattergeo\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scattergeo\"}],\"scattergl\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scattergl\"}],\"scattermapbox\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scattermapbox\"}],\"scatterpolar\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scatterpolar\"}],\"scatterpolargl\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scatterpolargl\"}],\"scatterternary\":[{\"marker\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"type\":\"scatterternary\"}],\"surface\":[{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"},\"colorscale\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"type\":\"surface\"}],\"table\":[{\"cells\":{\"fill\":{\"color\":\"#EBF0F8\"},\"line\":{\"color\":\"white\"}},\"header\":{\"fill\":{\"color\":\"#C8D4E3\"},\"line\":{\"color\":\"white\"}},\"type\":\"table\"}]},\"layout\":{\"annotationdefaults\":{\"arrowcolor\":\"#2a3f5f\",\"arrowhead\":0,\"arrowwidth\":1},\"autotypenumbers\":\"strict\",\"coloraxis\":{\"colorbar\":{\"outlinewidth\":0,\"ticks\":\"\"}},\"colorscale\":{\"diverging\":[[0,\"#8e0152\"],[0.1,\"#c51b7d\"],[0.2,\"#de77ae\"],[0.3,\"#f1b6da\"],[0.4,\"#fde0ef\"],[0.5,\"#f7f7f7\"],[0.6,\"#e6f5d0\"],[0.7,\"#b8e186\"],[0.8,\"#7fbc41\"],[0.9,\"#4d9221\"],[1,\"#276419\"]],\"sequential\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]],\"sequentialminus\":[[0.0,\"#0d0887\"],[0.1111111111111111,\"#46039f\"],[0.2222222222222222,\"#7201a8\"],[0.3333333333333333,\"#9c179e\"],[0.4444444444444444,\"#bd3786\"],[0.5555555555555556,\"#d8576b\"],[0.6666666666666666,\"#ed7953\"],[0.7777777777777778,\"#fb9f3a\"],[0.8888888888888888,\"#fdca26\"],[1.0,\"#f0f921\"]]},\"colorway\":[\"#636efa\",\"#EF553B\",\"#00cc96\",\"#ab63fa\",\"#FFA15A\",\"#19d3f3\",\"#FF6692\",\"#B6E880\",\"#FF97FF\",\"#FECB52\"],\"font\":{\"color\":\"#2a3f5f\"},\"geo\":{\"bgcolor\":\"white\",\"lakecolor\":\"white\",\"landcolor\":\"#E5ECF6\",\"showlakes\":true,\"showland\":true,\"subunitcolor\":\"white\"},\"hoverlabel\":{\"align\":\"left\"},\"hovermode\":\"closest\",\"mapbox\":{\"style\":\"light\"},\"paper_bgcolor\":\"white\",\"plot_bgcolor\":\"#E5ECF6\",\"polar\":{\"angularaxis\":{\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\"},\"bgcolor\":\"#E5ECF6\",\"radialaxis\":{\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\"}},\"scene\":{\"xaxis\":{\"backgroundcolor\":\"#E5ECF6\",\"gridcolor\":\"white\",\"gridwidth\":2,\"linecolor\":\"white\",\"showbackground\":true,\"ticks\":\"\",\"zerolinecolor\":\"white\"},\"yaxis\":{\"backgroundcolor\":\"#E5ECF6\",\"gridcolor\":\"white\",\"gridwidth\":2,\"linecolor\":\"white\",\"showbackground\":true,\"ticks\":\"\",\"zerolinecolor\":\"white\"},\"zaxis\":{\"backgroundcolor\":\"#E5ECF6\",\"gridcolor\":\"white\",\"gridwidth\":2,\"linecolor\":\"white\",\"showbackground\":true,\"ticks\":\"\",\"zerolinecolor\":\"white\"}},\"shapedefaults\":{\"line\":{\"color\":\"#2a3f5f\"}},\"ternary\":{\"aaxis\":{\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\"},\"baxis\":{\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\"},\"bgcolor\":\"#E5ECF6\",\"caxis\":{\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\"}},\"title\":{\"x\":0.05},\"xaxis\":{\"automargin\":true,\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\",\"title\":{\"standoff\":15},\"zerolinecolor\":\"white\",\"zerolinewidth\":2},\"yaxis\":{\"automargin\":true,\"gridcolor\":\"white\",\"linecolor\":\"white\",\"ticks\":\"\",\"title\":{\"standoff\":15},\"zerolinecolor\":\"white\",\"zerolinewidth\":2}}},\"xaxis\":{\"anchor\":\"y\",\"domain\":[0.0,1.0],\"title\":{\"text\":\"epoch\"}},\"yaxis\":{\"anchor\":\"x\",\"domain\":[0.0,1.0],\"title\":{\"text\":\"f1-score\"}},\"legend\":{\"title\":{\"text\":\"dataset_type\"},\"tracegroupgap\":0},\"margin\":{\"t\":60}},                        {\"responsive\": true}                    ).then(function(){\n",
+              "                            \n",
+              "var gd = document.getElementById('c45ac642-7293-4bc4-a09c-af437b08eb66');\n",
+              "var x = new MutationObserver(function (mutations, observer) {{\n",
+              "        var display = window.getComputedStyle(gd).display;\n",
+              "        if (!display || display === 'none') {{\n",
+              "            console.log([gd, 'removed!']);\n",
+              "            Plotly.purge(gd);\n",
+              "            observer.disconnect();\n",
+              "        }}\n",
+              "}});\n",
+              "\n",
+              "// Listen for the removal of the full notebook cells\n",
+              "var notebookContainer = gd.closest('#notebook-container');\n",
+              "if (notebookContainer) {{\n",
+              "    x.observe(notebookContainer, {childList: true});\n",
+              "}}\n",
+              "\n",
+              "// Listen for the clearing of the current output cell\n",
+              "var outputEl = gd.closest('.output');\n",
+              "if (outputEl) {{\n",
+              "    x.observe(outputEl, {childList: true});\n",
+              "}}\n",
+              "\n",
+              "                        })                };                            </script>        </div>\n",
+              "</body>\n",
+              "</html>"
+            ]
+          },
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "fJvP36TYnGB8",
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 295
+        },
+        "outputId": "1634cce1-4902-44f5-f3e0-8a14fd7d12bd"
+      },
+      "source": [
+        "figpath2save = os.path.join(EXP_PIPE_DATA,f\"BinaryClassBCE_nn_fig_model_{target_label}.jpeg\")\n",
+        "sns_plot = sns.lineplot(x = df_trainval[\"epoch\"], y = df_trainval[\"f1-score\"] , hue = df_trainval[\"dataset_type\"])\n",
+        "sns_plot.set( title = f\"CNN training for {target_label}\")\n",
+        "fig = sns_plot.get_figure()\n",
+        "fig.savefig(figpath2save)\n",
+        "fig.show()"
+      ],
+      "execution_count": 127,
+      "outputs": [
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<Figure size 432x288 with 1 Axes>"
+            ],
+            "image/png": "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\n"
+          },
+          "metadata": {
+            "needs_background": "light"
+          }
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Save model and perform some checks"
+      ],
+      "metadata": {
+        "id": "Jcn0SYnrvCjc"
+      }
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Yb5BzMAvqaT5",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "ed2d2457-f589-4d9b-8406-c9f1a5dff1ba"
+      },
+      "source": [
+        "modelpath2save = os.path.join(EXP_PIPE_DATA,f\"BinaryClassBCEnn_model_{target_label}.pth\")\n",
+        "# os.remove(modelpath2save)\n",
+        "if os.path.exists(modelpath2save):\n",
+        "  print(f\"[INFO] Model already exist on this path {modelpath2save}\")\n",
+        "else:\n",
+        "  print(f\"[INFO] Model saved on this path {modelpath2save}\")\n",
+        "  torch.save(net,modelpath2save)"
+      ],
+      "execution_count": 128,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[INFO] Model saved on this path /content/drive/My Drive/Maestria DM y KDD/Especializacion tesis/MDBDrums/MDB Drums/pipe005_multiplemodelsdata_corrected_over60/BinaryClassBCEnn_model_HH.pth\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "gbVqqn_e0qO6"
+      },
+      "source": [
+        "loaded_net = torch.load(modelpath2save)\n"
+      ],
+      "execution_count": 120,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "dxpEiM8R1c_M",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "0d50f9b8-765c-478e-dd0a-19a5af957a9b"
+      },
+      "source": [
+        "# important attributes\n",
+        "loaded_net.prediction_threshold\n",
+        "loaded_net.meanstd_normalizer\n",
+        "loaded_net.unique_labels"
+      ],
+      "execution_count": 121,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "['OTHER', 'HH']"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 121
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# function for predicting with raw data not normalized but after stft and stuff is applied\n",
+        "loaded_net.predict"
+      ],
+      "metadata": {
+        "id": "AdHrp2YP84Ed",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "caf70d4e-7a96-476d-ba34-783d0f2fe50b"
+      },
+      "execution_count": 122,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "<bound method Net.predict of Net(\n",
+              "  (meanstd_normalizer): Normalize(mean=0.14862293004989624, std=1.0505046844482422)\n",
+              "  (conv1): Conv2d(1, 6, kernel_size=(5, 5), stride=(1, 1))\n",
+              "  (pool): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)\n",
+              "  (conv2): Conv2d(6, 16, kernel_size=(5, 5), stride=(1, 1))\n",
+              "  (fc1): Linear(in_features=2000, out_features=120, bias=True)\n",
+              "  (dropout1): Dropout(p=0.5, inplace=False)\n",
+              "  (fc2): Linear(in_features=120, out_features=84, bias=True)\n",
+              "  (fc3): Linear(in_features=84, out_features=1, bias=True)\n",
+              ")>"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 122
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "loaded_net.predict"
+      ],
+      "metadata": {
+        "id": "P56SDoII85zN",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "7ca13042-2ffc-447d-8cc2-33b4858d89c0"
+      },
+      "execution_count": 123,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "<bound method Net.predict of Net(\n",
+              "  (meanstd_normalizer): Normalize(mean=0.14862293004989624, std=1.0505046844482422)\n",
+              "  (conv1): Conv2d(1, 6, kernel_size=(5, 5), stride=(1, 1))\n",
+              "  (pool): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)\n",
+              "  (conv2): Conv2d(6, 16, kernel_size=(5, 5), stride=(1, 1))\n",
+              "  (fc1): Linear(in_features=2000, out_features=120, bias=True)\n",
+              "  (dropout1): Dropout(p=0.5, inplace=False)\n",
+              "  (fc2): Linear(in_features=120, out_features=84, bias=True)\n",
+              "  (fc3): Linear(in_features=84, out_features=1, bias=True)\n",
+              ")>"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 123
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        ""
+      ],
+      "metadata": {
+        "id": "oqNUYP4FGCAr"
+      },
+      "execution_count": null,
+      "outputs": []
+    }
+  ]
+}
