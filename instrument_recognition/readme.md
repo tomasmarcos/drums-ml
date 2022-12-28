@@ -8,7 +8,7 @@ another instrument change target_label parameter to any of the following ones: K
 
 # Notes
 
-1) When you execute the CNN, be aware that the dropout layer in it is a source of randomness
+1) When you execute the CNN, be aware that the perma dropout layer in it is a source of randomness
 not controlled yet. However, you'll be able to achive similar results.
 
 2)  This is a preliminary version.
